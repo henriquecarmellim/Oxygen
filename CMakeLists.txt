@@ -30,6 +30,7 @@ target_include_directories(OxygenClicker PRIVATE
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${SDL2_INCLUDE_DIRS}
+    src
 )
 
 target_link_libraries(OxygenClicker PRIVATE
