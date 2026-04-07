@@ -26,6 +26,9 @@
 - **Clean ImGui UI** — dark purple theme, Lexend font, no bloat
 - **AppImage** — single portable binary, no install needed
 
+### Planned
+- [ ] Windows support (`SendInput` + `RegisterHotKey`)
+
 ---
 
 ## Download
