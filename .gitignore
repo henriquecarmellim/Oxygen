@@ -1,0 +1,7 @@
+cmake-build-*/
+build/
+AppDir/
+*.AppImage
+appimagetool-*.AppImage
+.idea/
+*.log
