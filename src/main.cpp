@@ -103,8 +103,15 @@ struct Bind {
     }
     void onKey(SDL_Keycode k){
         if(!waiting) return;
-        key     = (k==SDLK_ESCAPE) ? SDLK_UNKNOWN : k;
-        waiting = false;
+        // re-grab com nova tecla
+        if(g_dpy) XUngrabKey(g_dpy, AnyKey, AnyModifier, DefaultRootWindow(g_dpy));
+        if(k==SDLK_ESCAPE){ key=SDLK_UNKNOWN; waiting=false; return; }
+        key=k; waiting=false;
+        // converte SDL keycode → X11 KeySym → KeyCode e faz grab global
+        KeySym ks = XStringToKeysym(SDL_GetKeyName(k));
+        if(ks==NoSymbol) ks=(KeySym)k; // fallback direto
+        KeyCode kc=XKeysymToKeycode(g_dpy,ks);
+        if(kc) XGrabKey(g_dpy,kc,AnyModifier,DefaultRootWindow(g_dpy),False,GrabModeAsync,GrabModeAsync);
     }
 } g_bind;
 
@@ -281,8 +288,12 @@ static void LabeledSlider(const char* id, const char* label, float* v, float lo,
 // ─────────────────────────────────────────────────────────────────────────────
 //  UI
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  UI  — 360×450, keybind no topo
+// ─────────────────────────────────────────────────────────────────────────────
 static void RenderUI(){
-    constexpr float W=380.f, H=520.f;
+    constexpr float W=360.f, H=450.f;
     ImGuiIO& io=ImGui::GetIO();
     ImGui::SetNextWindowPos({(io.DisplaySize.x-W)*.5f,(io.DisplaySize.y-H)*.5f},ImGuiCond_Always);
     ImGui::SetNextWindowSize({W,H},ImGuiCond_Always);
@@ -298,31 +309,24 @@ static void RenderUI(){
 
     // ── Header ────────────────────────────────────────────────────────────────
     {
-        // fundo header
-        dl->AddRectFilled(wp,{wp.x+W,wp.y+62.f},C(c::bg_panel),12.f);
-        dl->AddRectFilled({wp.x,wp.y+50.f},{wp.x+W,wp.y+62.f},C(c::bg_panel));
-        dl->AddLine({wp.x,wp.y+62.f},{wp.x+W,wp.y+62.f},C(c::stroke));
-        // barra accent topo
+        dl->AddRectFilled(wp,{wp.x+W,wp.y+58.f},C(c::bg_panel),12.f);
+        dl->AddRectFilled({wp.x,wp.y+46.f},{wp.x+W,wp.y+58.f},C(c::bg_panel));
+        dl->AddLine({wp.x,wp.y+58.f},{wp.x+W,wp.y+58.f},C(c::stroke));
         dl->AddRectFilled(wp,{wp.x+W,wp.y+3.f},C(c::accent));
 
-        // ícone O com glow duplo
-        dl->AddCircleFilled({wp.x+28.f,wp.y+31.f},16.f,C(c::accent,.08f));
-        dl->AddCircle({wp.x+28.f,wp.y+31.f},13.f,C(c::accent,.35f),32,1.5f);
-        dl->AddCircle({wp.x+28.f,wp.y+31.f},10.f,C(c::accent,.70f),32,1.5f);
+        dl->AddCircleFilled({wp.x+26.f,wp.y+29.f},14.f,C(c::accent,.08f));
+        dl->AddCircle({wp.x+26.f,wp.y+29.f},11.f,C(c::accent,.35f),32,1.5f);
+        dl->AddCircle({wp.x+26.f,wp.y+29.f}, 8.f,C(c::accent,.70f),32,1.5f);
 
-        // nome
-        ImGui::SetCursorPos({50.f,14.f});
+        ImGui::SetCursorPos({46.f,12.f});
         ImGui::PushFont(font::bold);
         ImGui::PushStyleColor(ImGuiCol_Text,c::text);   ImGui::Text("Oxygen"); ImGui::PopStyleColor();
         ImGui::SameLine(0,0);
         ImGui::PushStyleColor(ImGuiCol_Text,c::accent); ImGui::Text("Clicker"); ImGui::PopStyleColor();
         ImGui::PopFont();
-
-        ImGui::SetCursorPos({50.f,36.f});
+        ImGui::SetCursorPos({46.f,32.f});
         ImGui::PushFont(font::regular);
-        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim);
-        ImGui::Text("v1.0  ·  Linux AutoClicker");
-        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("v1.0  ·  Linux AutoClicker"); ImGui::PopStyleColor();
         ImGui::PopFont();
 
         // badge
@@ -334,49 +338,73 @@ static void RenderUI(){
         ImGui::PushFont(font::regular);
         ImVec2 ts=ImGui::CalcTextSize(bt);
         ImGui::PopFont();
-        float bx=wp.x+W-ts.x-28.f, by=wp.y+22.f;
-        // glow do badge
-        dl->AddRectFilled({bx-10.f,by-6.f},{bx+ts.x+10.f,by+ts.y+6.f},C(bc,.08f),6.f);
+        float bx=wp.x+W-ts.x-26.f, by=wp.y+19.f;
         dl->AddRectFilled({bx-8.f,by-5.f},{bx+ts.x+8.f,by+ts.y+5.f},C(bc,.12f),6.f);
         dl->AddRect({bx-8.f,by-5.f},{bx+ts.x+8.f,by+ts.y+5.f},C(bc,.50f),6.f,0,1.f);
-        // dot
         dl->AddCircleFilled({bx-2.f,by+ts.y*.5f},3.f,C(bc));
         dl->AddText(font::regular,12.f,{bx+4.f,by},C(bc),bt);
     }
 
-    ImGui::SetCursorPos({18.f,74.f});
+    ImGui::SetCursorPos({18.f,66.f});
     ImGui::BeginGroup();
 
-    // ── AutoClicker toggle ────────────────────────────────────────────────────
-    Divider("AUTOCLICKER");
+    // ── Keybind ───────────────────────────────────────────────────────────────
+    Divider("KEYBIND");
     {
         Card card(62.f);
-        // label
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+12.f});
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+10.f});
+        ImGui::PushFont(font::bold);
+        ImGui::PushStyleColor(ImGuiCol_Text,c::text); ImGui::Text("Toggle key"); ImGui::PopStyleColor();
+        ImGui::PopFont();
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+32.f});
+        ImGui::PushFont(font::regular);
+        ImGui::PushStyleColor(ImGuiCol_Text,g_bind.waiting?c::yellow:c::text_dim);
+        ImGui::Text(g_bind.waiting?"Press any key  (Esc = clear)":"Global hotkey — works in any window");
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+
+        std::string bn=g_bind.name();
+        ImVec4 bc=g_bind.waiting?c::yellow:c::accent;
+        ImGui::SetCursorScreenPos({card.o.x+card.w-88.f,card.o.y+17.f});
+        ImGui::PushFont(font::bold);
+        ImGui::PushStyleColor(ImGuiCol_Button,       {bc.x,bc.y,bc.z,.15f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,{bc.x,bc.y,bc.z,.28f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, {bc.x,bc.y,bc.z,.42f});
+        ImGui::PushStyleColor(ImGuiCol_Text,bc);
+        ImGui::PushStyleColor(ImGuiCol_Border,{bc.x,bc.y,bc.z,.45f});
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,6.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,1.f);
+        if(ImGui::Button(bn.c_str(),{74.f,28.f}))
+            if(!g_bind.waiting) g_bind.waiting=true;
+        ImGui::PopStyleVar(2); ImGui::PopStyleColor(5); ImGui::PopFont();
+    }
+
+    // ── Enable ────────────────────────────────────────────────────────────────
+    Divider("AUTOCLICKER");
+    {
+        Card card(58.f);
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+10.f});
         ImGui::PushFont(font::bold);
         ImGui::PushStyleColor(ImGuiCol_Text,c::text); ImGui::Text("Enable"); ImGui::PopStyleColor();
         ImGui::PopFont();
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+34.f});
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+30.f});
         ImGui::PushFont(font::regular);
         ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("Toggle clicking on/off"); ImGui::PopStyleColor();
         ImGui::PopFont();
-        // toggle
-        ImGui::SetCursorScreenPos({card.o.x+card.w-56.f,card.o.y+20.f});
+        ImGui::SetCursorScreenPos({card.o.x+card.w-54.f,card.o.y+18.f});
         Toggle("##en",g_clicker.enabled);
     }
 
     // ── CPS ───────────────────────────────────────────────────────────────────
     Divider("CLICKS PER SECOND");
     {
-        Card card(126.f);
+        Card card(116.f);
         float lo=g_clicker.minCPS.load(), hi=g_clicker.maxCPS.load();
-        LabeledSlider("##lo","Min CPS",&lo,1.f,20.f,{card.o.x+14.f,card.o.y+10.f},cw-28.f);
+        LabeledSlider("##lo","Min CPS",&lo,1.f,20.f,{card.o.x+14.f,card.o.y+8.f},cw-28.f);
         if(lo!=g_clicker.minCPS.load()) g_clicker.minCPS.store(lo);
-
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+66.f});
-        LabeledSlider("##hi","Max CPS",&hi,1.f,20.f,{card.o.x+14.f,card.o.y+66.f},cw-28.f);
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+60.f});
+        LabeledSlider("##hi","Max CPS",&hi,1.f,20.f,{card.o.x+14.f,card.o.y+60.f},cw-28.f);
         if(hi!=g_clicker.maxCPS.load()) g_clicker.maxCPS.store(hi);
-
         if(g_clicker.minCPS.load()>g_clicker.maxCPS.load())
             g_clicker.minCPS.store(g_clicker.maxCPS.load());
     }
@@ -384,91 +412,28 @@ static void RenderUI(){
     // ── Options ───────────────────────────────────────────────────────────────
     Divider("OPTIONS");
     {
-        Card card(62.f);
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+12.f});
+        Card card(58.f);
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+10.f});
         ImGui::PushFont(font::bold);
         ImGui::PushStyleColor(ImGuiCol_Text,c::text); ImGui::Text("Hold to click"); ImGui::PopStyleColor();
         ImGui::PopFont();
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+34.f});
+        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+30.f});
         ImGui::PushFont(font::regular);
         ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("Only click while LMB is held"); ImGui::PopStyleColor();
         ImGui::PopFont();
-        ImGui::SetCursorScreenPos({card.o.x+card.w-56.f,card.o.y+20.f});
+        ImGui::SetCursorScreenPos({card.o.x+card.w-54.f,card.o.y+18.f});
         Toggle("##hold",g_clicker.holdOnly);
-    }
-
-    // ── Keybind ───────────────────────────────────────────────────────────────
-    Divider("KEYBIND");
-    {
-        Card card(62.f);
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+12.f});
-        ImGui::PushFont(font::bold);
-        ImGui::PushStyleColor(ImGuiCol_Text,c::text); ImGui::Text("Toggle key"); ImGui::PopStyleColor();
-        ImGui::PopFont();
-        ImGui::SetCursorScreenPos({card.o.x+14.f,card.o.y+34.f});
-        ImGui::PushFont(font::regular);
-        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim);
-        ImGui::Text(g_bind.waiting?"Press any key  (Esc = clear)":"Bind a key to toggle the clicker");
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-
-        std::string bn=g_bind.name();
-        ImVec4 bc=g_bind.waiting?c::yellow:c::accent;
-        ImGui::SetCursorScreenPos({card.o.x+card.w-94.f,card.o.y+18.f});
-        ImGui::PushFont(font::bold);
-        ImGui::PushStyleColor(ImGuiCol_Button,      {bc.x,bc.y,bc.z,.15f});
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,{bc.x,bc.y,bc.z,.28f});
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, {bc.x,bc.y,bc.z,.42f});
-        ImGui::PushStyleColor(ImGuiCol_Text,bc);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,6.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,1.f);
-        ImGui::PushStyleColor(ImGuiCol_Border,{bc.x,bc.y,bc.z,.35f});
-        if(ImGui::Button(bn.c_str(),{80.f,28.f}))
-            if(!g_bind.waiting) g_bind.waiting=true;
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(5);
-        ImGui::PopFont();
-    }
-
-    // ── CPS bar ───────────────────────────────────────────────────────────────
-    {
-        ImVec2 cp=ImGui::GetCursorScreenPos();
-        float h=32.f;
-        // fundo
-        dl->AddRectFilled(cp,{cp.x+cw,cp.y+h},C(c::bg_panel),7.f);
-        dl->AddRect(cp,{cp.x+cw,cp.y+h},C(c::stroke),7.f,0,1.f);
-        // barra
-        float lo=g_clicker.minCPS.load(),hi=g_clicker.maxCPS.load();
-        float mid=(lo+hi)*.5f, pct=(mid-1.f)/19.f, bw=(cw-28.f)*pct;
-        float bary=cp.y+13.f, barh=6.f;
-        dl->AddRectFilled({cp.x+14.f,bary},{cp.x+14.f+cw-28.f,bary+barh},C(c::bg_widget),3.f);
-        if(bw>0.f){
-            // gradiente simulado: dois rects
-            dl->AddRectFilled({cp.x+14.f,bary},{cp.x+14.f+bw,bary+barh},C(c::accent_dim),3.f);
-            dl->AddRectFilled({cp.x+14.f,bary},{cp.x+14.f+bw*.6f,bary+barh},C(c::accent),3.f);
-        }
-        // label
-        char buf[32]; snprintf(buf,sizeof(buf),"~%.1f CPS",mid);
-        dl->AddText(font::regular,12.f,{cp.x+14.f,cp.y+h-14.f},C(c::text_dim,.6f),buf);
-        // range
-        char rbuf[32]; snprintf(rbuf,sizeof(rbuf),"%.0f – %.0f",lo,hi);
-        ImGui::PushFont(font::regular);
-        ImVec2 rs=ImGui::CalcTextSize(rbuf);
-        ImGui::PopFont();
-        dl->AddText(font::regular,12.f,{cp.x+cw-rs.x-14.f,cp.y+h-14.f},C(c::text_dim,.6f),rbuf);
-        ImGui::Dummy({cw,h+10.f});
     }
 
     ImGui::EndGroup();
 
     // ── Footer ────────────────────────────────────────────────────────────────
     {
-        float fy=wp.y+H-28.f;
-        dl->AddLine({wp.x+18.f,fy},{wp.x+W-18.f,fy},C(c::stroke,.6f));
-        dl->AddText(font::regular,11.f,{wp.x+18.f,fy+8.f},C(c::text_dim,.35f),
+        float fy=wp.y+H-24.f;
+        dl->AddLine({wp.x+18.f,fy},{wp.x+W-18.f,fy},C(c::stroke,.4f));
+        dl->AddText(font::regular,11.f,{wp.x+18.f,fy+7.f},C(c::text_dim,.28f),
                     "OxygenClicker  ·  github.com/revann/OxygenClicker");
     }
-
     ImGui::End();
 }
 
@@ -484,7 +449,7 @@ int main(int,char**){
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
 
     SDL_Window* win=SDL_CreateWindow("OxygenClicker",
-        SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,380,520,
+        SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,360,450,
         SDL_WINDOW_OPENGL|SDL_WINDOW_SHOWN|SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_GLContext ctx=SDL_GL_CreateContext(win);
     SDL_GL_SetSwapInterval(1);
@@ -494,14 +459,13 @@ int main(int,char**){
     ImGuiIO& io=ImGui::GetIO();
     io.IniFilename=nullptr;
 
-    // ── Fontes (Lexend do client-wl) ─────────────────────────────────────────
     auto copyFont=[](const unsigned char* src,size_t sz)->void*{
         void* d=IM_ALLOC(sz); memcpy(d,src,sz); return d;
     };
     ImFontConfig cfg; cfg.FontDataOwnedByAtlas=true;
     const ImWchar* ranges=io.Fonts->GetGlyphRangesDefault();
-    font::bold    =io.Fonts->AddFontFromMemoryTTF(copyFont(lexend_bold,   sizeof(lexend_bold)),   sizeof(lexend_bold),   15.f,&cfg,ranges);
-    font::regular =io.Fonts->AddFontFromMemoryTTF(copyFont(lexend_regular,sizeof(lexend_regular)),sizeof(lexend_regular),13.f,&cfg,ranges);
+    font::bold   =io.Fonts->AddFontFromMemoryTTF(copyFont(lexend_bold,   sizeof(lexend_bold)),   sizeof(lexend_bold),   15.f,&cfg,ranges);
+    font::regular=io.Fonts->AddFontFromMemoryTTF(copyFont(lexend_regular,sizeof(lexend_regular)),sizeof(lexend_regular),13.f,&cfg,ranges);
     io.Fonts->Build();
 
     ApplyStyle();
@@ -516,14 +480,18 @@ int main(int,char**){
         while(SDL_PollEvent(&e)){
             ImGui_ImplSDL2_ProcessEvent(&e);
             if(e.type==SDL_QUIT) quit=true;
-            if(e.type==SDL_KEYDOWN){
-                if(g_bind.waiting){
-                    g_bind.onKey(e.key.keysym.sym);
-                } else if(g_bind.key!=SDLK_UNKNOWN && e.key.keysym.sym==g_bind.key){
+            if(e.type==SDL_KEYDOWN && g_bind.waiting)
+                g_bind.onKey(e.key.keysym.sym);
+        }
+        // Bind global via XGrabKey — recebe KeyPress mesmo sem foco
+        if(g_dpy && !g_bind.waiting && g_bind.key!=SDLK_UNKNOWN){
+            while(XPending(g_dpy)){
+                XEvent xe; XNextEvent(g_dpy,&xe);
+                if(xe.type==KeyPress)
                     g_clicker.enabled.store(!g_clicker.enabled.load());
-                }
             }
         }
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
@@ -536,6 +504,7 @@ int main(int,char**){
         SDL_GL_SwapWindow(win);
     }
 
+    if(g_dpy) XUngrabKey(g_dpy,AnyKey,AnyModifier,DefaultRootWindow(g_dpy));
     g_clicker.stop();
     if(g_dpy) XCloseDisplay(g_dpy);
     ImGui_ImplOpenGL3_Shutdown();
