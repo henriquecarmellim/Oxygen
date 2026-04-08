@@ -38,6 +38,8 @@ target_link_libraries(OxygenClicker PRIVATE
     OpenGL::GL
     X11
     Xtst
+    dl
+    pthread
 )
 
 target_compile_options(OxygenClicker PRIVATE -O2)

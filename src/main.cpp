@@ -37,10 +37,10 @@ namespace font { inline ImFont* bold=nullptr; inline ImFont* regular=nullptr; }
 // ── X11: dois displays separados — sem race condition ─────────────────────────
 // g_dpy_ui  → thread principal (XGrabKey / XPending)
 // g_dpy_clk → thread do clicker (XSendEvent / XQueryPointer)
-static Display* g_dpy_ui  = nullptr;
-static Display* g_dpy_clk = nullptr;
-static Window   g_win     = 0;
-static auto     g_winT    = std::chrono::steady_clock::now();
+static Display*              g_dpy_ui  = nullptr;
+static Display*              g_dpy_clk = nullptr;
+static std::atomic<Window>   g_win     {0};
+static auto                  g_winT    = std::chrono::steady_clock::now();
 
 static void updateFocus(){
     auto now=std::chrono::steady_clock::now();
@@ -401,9 +401,16 @@ static void RenderUI(){
 int main(int,char**){
     XInitThreads();
     g_dpy_ui  = XOpenDisplay(nullptr);
-    g_dpy_clk = XOpenDisplay(nullptr);  // display exclusivo da thread do clicker
+    g_dpy_clk = XOpenDisplay(nullptr);
+    if(!g_dpy_ui || !g_dpy_clk){
+        fprintf(stderr,"XOpenDisplay failed: is DISPLAY set?\n");
+        return 1;
+    }
 
-    SDL_Init(SDL_INIT_VIDEO);
+    if(SDL_Init(SDL_INIT_VIDEO)!=0){
+        fprintf(stderr,"SDL_Init error: %s\n",SDL_GetError());
+        return 1;
+    }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
     SDL_Window* win=SDL_CreateWindow("OxygenClicker",

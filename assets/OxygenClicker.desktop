@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=OxygenClicker
+Comment=Linux AutoClicker with ImGui
+Exec=OxygenClicker
+Icon=OxygenClicker
+Type=Application
+Categories=Utility;
