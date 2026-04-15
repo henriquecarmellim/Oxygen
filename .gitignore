@@ -1,7 +1,10 @@
 cmake-build-*/
 build/
+build-linux/
+build-windows/
 AppDir/
 *.AppImage
 appimagetool-*.AppImage
 .idea/
 *.log
+autoclicker/
