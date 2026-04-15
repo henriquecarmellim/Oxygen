@@ -20,6 +20,7 @@ public:
         if (!m_display || !m_targetName[0]) return true;
         Window focused; int revert;
         XGetInputFocus(m_display, &focused, &revert);
+        if (focused <= 1) return false;  // None or PointerRoot
         char* name = nullptr;
         XFetchName(m_display, focused, &name);
         bool match = name && strstr(name, m_targetName);
