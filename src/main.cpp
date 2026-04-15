@@ -108,23 +108,23 @@ static KeySym sdlToKeySym(SDL_Keycode k){
 struct Bind {
     SDL_Keycode key    = SDLK_UNKNOWN;
     bool        waiting= false;
+    KeyCode     keycode= 0;           // X11 keycode for XQueryKeymap polling
     std::string name() const {
         if(waiting)           return "...";
         if(key==SDLK_UNKNOWN) return "None";
         return SDL_GetKeyName(key);
     }
     void set(SDL_Keycode k){
-        if(g_dpy_ui) XUngrabKey(g_dpy_ui,AnyKey,AnyModifier,DefaultRootWindow(g_dpy_ui));
         waiting=false;
-        if(k==SDLK_ESCAPE){ key=SDLK_UNKNOWN; return; }
+        if(k==SDLK_ESCAPE){ key=SDLK_UNKNOWN; keycode=0; return; }
         key=k;
         KeySym ks=sdlToKeySym(k);
-        if(ks==NoSymbol) return;
-        KeyCode kc=XKeysymToKeycode(g_dpy_ui,ks);
-        if(kc) XGrabKey(g_dpy_ui,kc,AnyModifier,DefaultRootWindow(g_dpy_ui),
-                        False,GrabModeAsync,GrabModeAsync);
+        keycode=(ks!=NoSymbol && g_dpy_ui) ? XKeysymToKeycode(g_dpy_ui,ks) : 0;
     }
 } g_bind;
+
+// forward declared — defined after g_clicker
+static void hotkeyLoop();
 
 // ── Clicker ───────────────────────────────────────────────────────────────────
 struct Clicker {
@@ -157,6 +157,28 @@ private:
         }
     }
 } g_clicker;
+
+// ── Hotkey polling thread (XQueryKeymap — no grab, no interception) ───────────
+static std::atomic<bool> g_hotkeyRunning{false};
+static std::thread       g_hotkeyThread;
+
+static void hotkeyLoop(){
+    bool prev=false;
+    while(g_hotkeyRunning){
+        KeyCode kc=g_bind.keycode;
+        if(kc && g_dpy_ui){
+            char keys[32]{};
+            XQueryKeymap(g_dpy_ui,keys);
+            bool cur=(keys[kc/8]>>(kc%8))&1;
+            if(cur&&!prev)
+                g_clicker.enabled.store(!g_clicker.enabled.load());
+            prev=cur;
+        } else {
+            prev=false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
 
 // ── Style ─────────────────────────────────────────────────────────────────────
 static void ApplyStyle(){
@@ -437,6 +459,8 @@ int main(int,char**){
     ImGui_ImplOpenGL3_Init("#version 130");
 
     g_clicker.start();
+    g_hotkeyRunning=true;
+    g_hotkeyThread=std::thread(hotkeyLoop);
 
     bool quit=false;
     while(!quit){
@@ -447,14 +471,7 @@ int main(int,char**){
             if(e.type==SDL_KEYDOWN && g_bind.waiting)
                 g_bind.set(e.key.keysym.sym);
         }
-        // Bind global: XGrabKey entrega KeyPress no g_dpy_ui mesmo sem foco
-        if(g_dpy_ui && !g_bind.waiting && g_bind.key!=SDLK_UNKNOWN){
-            while(XPending(g_dpy_ui)){
-                XEvent xe; XNextEvent(g_dpy_ui,&xe);
-                if(xe.type==KeyPress)
-                    g_clicker.enabled.store(!g_clicker.enabled.load());
-            }
-        }
+        // hotkey handled by hotkeyLoop thread (XQueryKeymap polling)
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -470,6 +487,8 @@ int main(int,char**){
 
     if(g_dpy_ui) XUngrabKey(g_dpy_ui,AnyKey,AnyModifier,DefaultRootWindow(g_dpy_ui));
     g_clicker.stop();
+    g_hotkeyRunning=false;
+    if(g_hotkeyThread.joinable()) g_hotkeyThread.join();
     if(g_dpy_ui)  XCloseDisplay(g_dpy_ui);
     if(g_dpy_clk) XCloseDisplay(g_dpy_clk);
     ImGui_ImplOpenGL3_Shutdown();
