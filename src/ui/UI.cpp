@@ -9,7 +9,6 @@
 #include <string>
 #include "font.h"
 
-// ── Palette ───────────────────────────────────────────────────────────────────
 namespace c {
     constexpr ImVec4 accent    = {0.50f,0.35f,0.88f,1.f};
     constexpr ImVec4 accent_dim= {0.32f,0.22f,0.60f,1.f};
@@ -23,10 +22,21 @@ namespace c {
     constexpr ImVec4 red       = {0.76f,0.26f,0.26f,1.f};
     constexpr ImVec4 yellow    = {0.88f,0.72f,0.18f,1.f};
 }
-static ImU32 C(ImVec4 v, float a=1.f){
+static ImU32 C(ImVec4 v,float a=1.f){
     return IM_COL32(int(v.x*255),int(v.y*255),int(v.z*255),int(a*255));
 }
 namespace font { ImFont* bold=nullptr; ImFont* regular=nullptr; }
+
+// ── Bind state ────────────────────────────────────────────────────────────────
+static struct {
+    SDL_Keycode key    = SDLK_UNKNOWN;
+    bool        waiting= false;
+    std::string name() const {
+        if(waiting)           return "...";
+        if(key==SDLK_UNKNOWN) return "None";
+        return SDL_GetKeyName(key);
+    }
+} g_bind;
 
 // ── Style ─────────────────────────────────────────────────────────────────────
 static void ApplyStyle(){
@@ -122,7 +132,7 @@ struct Card {
     }
 };
 
-static void SliderRow(const char* id, const char* label, float* v, float lo, float hi, float x, float y, float w){
+static void SliderRow(const char* id,const char* label,float* v,float lo,float hi,float x,float y,float w){
     ImDrawList* dl=ImGui::GetWindowDrawList();
     char vbuf[16]; snprintf(vbuf,sizeof(vbuf),"%.1f",*v);
     ImVec2 vs=ImGui::CalcTextSize(vbuf);
@@ -136,14 +146,12 @@ static void SliderRow(const char* id, const char* label, float* v, float lo, flo
     ImGui::PopStyleColor(2); ImGui::PopItemWidth();
 }
 
-// ── UI class ──────────────────────────────────────────────────────────────────
+// ── UI ────────────────────────────────────────────────────────────────────────
 UI::UI(ClickerState* state, Clicker* clicker, HotkeyManager* hotkey)
     : m_state(state), m_clicker(clicker), m_hotkey(hotkey) {}
 
 void UI::run(){
-    if(SDL_Init(SDL_INIT_VIDEO)!=0){
-        fprintf(stderr,"SDL_Init: %s\n",SDL_GetError()); return;
-    }
+    if(SDL_Init(SDL_INIT_VIDEO)!=0){ fprintf(stderr,"SDL_Init: %s\n",SDL_GetError()); return; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
     SDL_Window* win=SDL_CreateWindow("OxygenClicker",
@@ -175,6 +183,12 @@ void UI::run(){
         while(SDL_PollEvent(&e)){
             ImGui_ImplSDL2_ProcessEvent(&e);
             if(e.type==SDL_QUIT) quit=true;
+            if(e.type==SDL_KEYDOWN && g_bind.waiting){
+                SDL_Keycode k=e.key.keysym.sym;
+                g_bind.waiting=false;
+                if(k==SDLK_ESCAPE){ g_bind.key=SDLK_UNKNOWN; m_hotkey->setToggleKey(0); }
+                else { g_bind.key=k; m_hotkey->setToggleKey((int)k); }
+            }
         }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -211,7 +225,7 @@ void UI::render(){
     ImVec2 wp=ImGui::GetWindowPos();
     float cw=W-32.f;
 
-    // Header
+    // ── Header ────────────────────────────────────────────────────────────────
     {
         dl->AddRectFilled(wp,{wp.x+W,wp.y+56.f},C(c::bg_panel),10.f);
         dl->AddRectFilled({wp.x,wp.y+44.f},{wp.x+W,wp.y+56.f},C(c::bg_panel));
@@ -253,15 +267,44 @@ void UI::render(){
     ImGui::SetCursorPos({16.f,64.f});
     ImGui::BeginGroup();
 
+    // ── AutoClicker + Bind ────────────────────────────────────────────────────
     Divider("AUTOCLICKER");
     {
         Card card(56.f);
         RowBegin(card.o,card.w,"Enable","Toggle clicking on/off");
         float ty=card.o.y+(56.f-20.f)*.5f;
+
+        // Bind button
+        std::string bn=g_bind.name();
+        ImVec4 bc=g_bind.waiting?c::yellow:c::accent;
+        float btnW=60.f;
+        ImGui::SetCursorScreenPos({card.o.x+card.w-54.f-btnW-6.f,ty-4.f});
+        ImGui::PushFont(font::bold);
+        ImGui::PushStyleColor(ImGuiCol_Button,       {bc.x,bc.y,bc.z,.13f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,{bc.x,bc.y,bc.z,.25f});
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, {bc.x,bc.y,bc.z,.40f});
+        ImGui::PushStyleColor(ImGuiCol_Text,bc);
+        ImGui::PushStyleColor(ImGuiCol_Border,{bc.x,bc.y,bc.z,.40f});
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,5.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,1.f);
+        if(ImGui::Button(bn.c_str(),{btnW,28.f}) && !g_bind.waiting)
+            g_bind.waiting=true;
+        ImGui::PopStyleVar(2); ImGui::PopStyleColor(5); ImGui::PopFont();
+
+        if(g_bind.waiting){
+            ImGui::SetCursorScreenPos({card.o.x+card.w-54.f-btnW-6.f,ty+26.f});
+            ImGui::PushFont(font::regular);
+            ImGui::PushStyleColor(ImGuiCol_Text,c::yellow);
+            ImGui::Text("Esc = clear");
+            ImGui::PopStyleColor(); ImGui::PopFont();
+        }
+
+        // Toggle
         ImGui::SetCursorScreenPos({card.o.x+card.w-54.f,ty});
         Toggle("##en",m_state->enabled);
     }
 
+    // ── CPS ───────────────────────────────────────────────────────────────────
     Divider("CLICKS PER SECOND");
     {
         Card card(112.f);
@@ -273,6 +316,7 @@ void UI::render(){
         if(m_state->cpsMin>m_state->cpsMax) m_state->cpsMin=m_state->cpsMax.load();
     }
 
+    // ── Options ───────────────────────────────────────────────────────────────
     Divider("OPTIONS");
     {
         Card card(56.f);
@@ -289,7 +333,7 @@ void UI::render(){
 
     ImGui::EndGroup();
 
-    // Footer
+    // ── Footer ────────────────────────────────────────────────────────────────
     {
         float fy=wp.y+H-22.f;
         dl->AddLine({wp.x+16.f,fy},{wp.x+W-16.f,fy},C(c::stroke,.35f));
