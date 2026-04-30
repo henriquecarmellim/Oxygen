@@ -51,7 +51,7 @@ static void updateFocus(){
     if(focused<=1){g_win=0;return;}
     char* name=nullptr;
     if(XFetchName(g_dpy_clk,focused,&name)&&name){
-        g_win=(strstr(name,"Minecraft")||strstr(name,"minecraft"))?focused:0;
+        g_win=(strstr(name,"Minecraft")||strstr(name,"minecraft"))||strstr(name,"CheatBreaker")?focused:0;
         XFree(name);
     } else g_win=0;
 }
