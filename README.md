@@ -2,7 +2,7 @@
 
 <br/>
 
-<img src="https://img.shields.io/badge/OxygenClicker-v2.1-8560E6?style=for-the-badge&labelColor=0a0a0d"/>
+<img src="https://img.shields.io/badge/OxygenClicker-v2.1.1-8560E6?style=for-the-badge&labelColor=0a0a0d"/>
 
 <br/><br/>
 
