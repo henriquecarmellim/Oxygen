@@ -5,6 +5,8 @@
 #include <timeapi.h>
 #include <atomic>
 #include <cstring>
+#include <cstdint>
+#include <vector>
 
 class PlatformWindows : public Platform {
 public:
@@ -45,11 +47,18 @@ public:
 
     // Em jogo o Minecraft esconde o cursor e prende ele na janela (ClipCursor).
     // Com GUI aberta o cursor aparece e fica livre.
+    // Em tela cheia (F11) com 1 monitor o clip == tela inteira, então só o clip
+    // não basta: o LWJGL2 troca por um cursor transparente quando trava o mouse.
     bool isCursorVisible() override {
         CURSORINFO ci{};
         ci.cbSize = sizeof(ci);
         if (!GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING) || !ci.hCursor)
             return false;
+        if (ci.hCursor != m_lastCursor) {   // handle de cursor é estável, cacheia
+            m_lastCursor = ci.hCursor;
+            m_lastBlank  = isBlankCursor(ci.hCursor);
+        }
+        if (m_lastBlank) return false;
         RECT clip, screen;
         GetClipCursor(&clip);
         screen.left   = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -87,7 +96,58 @@ public:
     const char* name() const override { return "Windows"; }
 
 private:
+    static std::vector<uint32_t> readBitmap(HDC dc, HBITMAP bmp, int& w, int& h) {
+        BITMAP bm{};
+        GetObject(bmp, sizeof(bm), &bm);
+        w = bm.bmWidth; h = bm.bmHeight;
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth       = w;
+        bi.bmiHeader.biHeight      = -h;   // top-down
+        bi.bmiHeader.biPlanes      = 1;
+        bi.bmiHeader.biBitCount    = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        std::vector<uint32_t> px((size_t)w * h);
+        if (!GetDIBits(dc, bmp, 0, h, px.data(), &bi, DIB_RGB_COLORS)) px.clear();
+        return px;
+    }
+
+    // Cursor 100% transparente = mouse travado pelo jogo
+    static bool isBlankCursor(HCURSOR cur) {
+        ICONINFO ii{};
+        if (!GetIconInfo(cur, &ii)) return false;
+        HDC dc = GetDC(nullptr);
+        int mw, mh, cw, ch;
+        auto mask = readBitmap(dc, ii.hbmMask, mw, mh);
+        bool blank = !mask.empty();
+        if (ii.hbmColor) {
+            auto color = readBitmap(dc, ii.hbmColor, cw, ch);
+            bool hasAlpha = false;
+            for (uint32_t p : color) if (p >> 24) { hasAlpha = true; break; }
+            if (hasAlpha) {
+                blank = false;                       // tem pixel com alpha > 0
+            } else {
+                for (uint32_t p : color) if (p & 0xFFFFFF) { blank = false; break; }
+                for (uint32_t p : mask)  if ((p & 0xFFFFFF) != 0xFFFFFF) { blank = false; break; }
+            }
+            if (color.empty()) blank = false;
+        } else {
+            // monocromático: metade de cima = AND, metade de baixo = XOR
+            size_t half = mask.size() / 2;
+            for (size_t i = 0; i < mask.size() && blank; ++i) {
+                uint32_t v = mask[i] & 0xFFFFFF;
+                if (i < half ? v != 0xFFFFFF : v != 0) blank = false;
+            }
+        }
+        ReleaseDC(nullptr, dc);
+        if (ii.hbmMask)  DeleteObject(ii.hbmMask);
+        if (ii.hbmColor) DeleteObject(ii.hbmColor);
+        return blank;
+    }
+
     std::atomic<HWND> m_hwnd{nullptr};
+    HCURSOR m_lastCursor = nullptr;
+    bool    m_lastBlank  = false;
 };
 
 std::unique_ptr<Platform> CreatePlatform() {

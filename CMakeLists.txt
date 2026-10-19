@@ -29,7 +29,7 @@ if(WIN32)
     target_link_libraries(OxygenClicker PRIVATE
         -static
         ${SDL2_STATIC_LDFLAGS}
-        opengl32 winmm)
+        opengl32 winmm gdi32)
 else()
     pkg_check_modules(X11 REQUIRED x11 xfixes)
     # LEGACY → libGL.so.1 (presente em toda distro); GLVND puxaria libOpenGL.so.0, que muitas não têm
