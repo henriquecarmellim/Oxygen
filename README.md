@@ -2,7 +2,7 @@
 
 <br/>
 
-<img src="https://img.shields.io/badge/OxygenClicker-v2.0-8560E6?style=for-the-badge&labelColor=0a0a0d"/>
+<img src="https://img.shields.io/badge/OxygenClicker-v2.1-8560E6?style=for-the-badge&labelColor=0a0a0d"/>
 
 <br/><br/>
 
@@ -23,8 +23,9 @@
 - **Randomized CPS** — min/max range, interval randomized each click
 - **Global keybind** — toggle from any window (F3)
 - **Minecraft focus** — only clicks when target window is focused
+- **Work in inventory** — optionally keep clicking while a GUI (inventory, chest) is open; off = pauses in GUIs
 - **Clean ImGui UI** — dark purple theme, Lexend font, no bloat
-- **Cross-platform** — Linux (X11/XTest) and Windows (SendInput)
+- **Cross-platform** — Linux (X11) and Windows (Win32), clicks posted straight to the game window
 
 ---
 
@@ -43,12 +44,12 @@ chmod +x OxygenClicker-linux-x86_64
 ./OxygenClicker-linux-x86_64
 ```
 
-> Requires `libXtst` on the host:
+> Requires `libXfixes` on the host (usually already installed):
 > ```bash
 > # Debian / Ubuntu
-> sudo apt install libxtst6
+> sudo apt install libxfixes3
 > # Arch
-> sudo pacman -S libxtst
+> sudo pacman -S libxfixes
 > ```
 
 **Windows:** just run `OxygenClicker-windows-x86_64.exe` — no install needed, fully static.
@@ -60,10 +61,10 @@ chmod +x OxygenClicker-linux-x86_64
 **Linux dependencies**
 ```bash
 # Debian / Ubuntu
-sudo apt install cmake build-essential libsdl2-dev libgl-dev libx11-dev libxtst-dev
+sudo apt install cmake build-essential libsdl2-dev libgl-dev libx11-dev libxfixes-dev
 
 # Arch
-sudo pacman -S cmake sdl2 mesa libx11 libxtst
+sudo pacman -S cmake sdl2 mesa libx11 libxfixes
 ```
 
 **Linux build**
@@ -73,32 +74,39 @@ cmake --build build-linux -j$(nproc)
 ./build-linux/OxygenClicker
 ```
 
+**Windows native build (MSYS2 MinGW64 shell)**
+```bash
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-SDL2
+cmake -G Ninja -B build-windows -DCMAKE_BUILD_TYPE=Release
+cmake --build build-windows
+```
+
 **Windows cross-compile (from Linux, requires mingw-w64)**
 ```bash
 # Download SDL2 mingw dev package from https://github.com/libsdl-org/SDL/releases
 SDL2_DIR=/path/to/SDL2-x.x.x/x86_64-w64-mingw32
 
-cmake -B build-windows \
+PKG_CONFIG_LIBDIR=$SDL2_DIR/lib/pkgconfig cmake -B build-windows \
   -DCMAKE_TOOLCHAIN_FILE=mingw-toolchain.cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DSDL2_INCLUDE_DIRS="$SDL2_DIR/include;$SDL2_DIR/include/SDL2" \
-  -DSDL2_LIBRARIES="$SDL2_DIR/lib/libSDL2main.a;$SDL2_DIR/lib/libSDL2.a;-lwinmm;-limm32;-lole32;-loleaut32;-lversion;-lsetupapi" \
-  -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++ -static -lpthread"
+  -DPKG_CONFIG_ARGN=--define-prefix
 
 cmake --build build-windows -j$(nproc)
 ```
 
+The Windows `.exe` is fully static (SDL2 + MinGW runtime linked in).
+
 ---
 
-## Architecture (v2.0)
+## Architecture (v2.1)
 
 ```
 src/
-├── core/          # OS-independent clicker logic + state
-├── platform/      # OS abstraction (Linux: XTest, Windows: SendInput)
-├── input/         # Hotkey polling (Linux: XQueryKeymap, Windows: GetAsyncKeyState)
-└── ui/            # ImGui UI (SDL2 + OpenGL3)
-include/           # Headers for all modules
+├── main.cpp                       # ImGui UI, clicker loop, hotkey loop (OS-independent)
+└── platform/
+    ├── linux/PlatformLinux.cpp    # X11: XSendEvent, XQueryKeymap, XFixes cursor
+    └── windows/PlatformWindows.cpp# Win32: PostMessage, GetAsyncKeyState, GetCursorInfo
+include/platform/Platform.h        # OS abstraction interface
 ```
 
 ---
@@ -110,10 +118,12 @@ include/           # Headers for all modules
 | Language | C++17 |
 | GUI | Dear ImGui v1.91.6 (SDL2 + OpenGL3) |
 | Font | Lexend (Bold + Regular) |
-| Clicking (Linux) | `XTestFakeButtonEvent` |
-| Clicking (Windows) | `SendInput` |
+| Clicking (Linux) | `XSendEvent` to the game window |
+| Clicking (Windows) | `PostMessage(WM_LBUTTONDOWN/UP)` to the game window |
 | Global bind (Linux) | `XQueryKeymap` |
 | Global bind (Windows) | `GetAsyncKeyState` |
+| GUI detection (Linux) | `XFixesGetCursorImage` (transparent cursor = in game) |
+| GUI detection (Windows) | `GetCursorInfo` + `GetClipCursor` (hidden/clipped = in game) |
 | Build | CMake 3.16+, FetchContent |
 
 ---

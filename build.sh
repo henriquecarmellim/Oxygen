@@ -23,7 +23,7 @@ else
             apt-get install -y -qq \
                 cmake g++ git \
                 libsdl2-dev libgl-dev \
-                libx11-dev libxtst-dev \
+                libx11-dev libxfixes-dev \
                 pkg-config ca-certificates 2>/dev/null
             rm -rf cmake-build-release
             cmake -B cmake-build-release \

@@ -2,11 +2,7 @@
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
 #include <SDL2/SDL.h>
-#include <GL/gl.h>
-#include <X11/Xlib.h>
-#include <X11/XKBlib.h>
-#include <X11/keysym.h>
-#include <X11/extensions/XTest.h>
+#include <SDL2/SDL_opengl.h>
 #include <atomic>
 #include <chrono>
 #include <random>
@@ -15,6 +11,7 @@
 #include <cstdio>
 #include <string>
 #include "font.h"
+#include "platform/Platform.h"
 
 namespace c {
     constexpr ImVec4 accent    = {0.50f,0.35f,0.88f,1.f};
@@ -34,81 +31,15 @@ static ImU32 C(ImVec4 v,float a=1.f){
 }
 namespace font { inline ImFont* bold=nullptr; inline ImFont* regular=nullptr; }
 
-// ── X11: dois displays separados — sem race condition ─────────────────────────
-// g_dpy_ui  → thread principal (XGrabKey / XPending)
-// g_dpy_clk → thread do clicker (XSendEvent / XQueryPointer)
-static Display*              g_dpy_ui  = nullptr;
-static Display*              g_dpy_clk = nullptr;
-static std::atomic<Window>   g_win     {0};
-static auto                  g_winT    = std::chrono::steady_clock::now();
-
-static void updateFocus(){
-    auto now=std::chrono::steady_clock::now();
-    if(std::chrono::duration_cast<std::chrono::milliseconds>(now-g_winT).count()<500) return;
-    g_winT=now;
-    Window focused; int revert;
-    XGetInputFocus(g_dpy_clk,&focused,&revert);
-    if(focused<=1){g_win=0;return;}
-    char* name=nullptr;
-    if(XFetchName(g_dpy_clk,focused,&name)&&name){
-        g_win=(strstr(name,"Minecraft")||strstr(name,"minecraft"))||strstr(name,"CheatBreaker")?focused:0;
-        XFree(name);
-    } else g_win=0;
-}
-
-static void injectClick(){
-    if(!g_dpy_clk||!g_win) return;
-    Window root,child; int rx,ry,wx,wy; unsigned int mask;
-    XQueryPointer(g_dpy_clk,g_win,&root,&child,&rx,&ry,&wx,&wy,&mask);
-    XEvent ev; memset(&ev,0,sizeof(ev));
-    ev.xbutton.button=1; ev.xbutton.same_screen=True; ev.xbutton.subwindow=g_win;
-    while(ev.xbutton.subwindow){
-        ev.xbutton.window=ev.xbutton.subwindow;
-        XQueryPointer(g_dpy_clk,ev.xbutton.window,&root,&ev.xbutton.subwindow,
-                      &ev.xbutton.x_root,&ev.xbutton.y_root,
-                      &ev.xbutton.x,&ev.xbutton.y,&ev.xbutton.state);
-    }
-    ev.type=ButtonPress;
-    XSendEvent(g_dpy_clk,ev.xbutton.window,True,ButtonPressMask,&ev); XFlush(g_dpy_clk);
-    ev.type=ButtonRelease;
-    XSendEvent(g_dpy_clk,ev.xbutton.window,True,ButtonReleaseMask,&ev); XFlush(g_dpy_clk);
-}
-
-static bool isLMBHeld(){
-    if(!g_dpy_clk) return false;
-    Window r,ch; int rx,ry,wx,wy; unsigned int mask;
-    XQueryPointer(g_dpy_clk,DefaultRootWindow(g_dpy_clk),&r,&ch,&rx,&ry,&wx,&wy,&mask);
-    return mask&Button1Mask;
-}
+// ── Platform (X11 / Win32) ────────────────────────────────────────────────────
+static std::unique_ptr<Platform> g_platform;
+static std::atomic<bool>         g_inGui{false};   // cursor visível = GUI/inventário aberto
 
 // ── Bind ──────────────────────────────────────────────────────────────────────
-static KeySym sdlToKeySym(SDL_Keycode k){
-    if(k>='a'&&k<='z') return (KeySym)k;
-    if(k>='0'&&k<='9') return (KeySym)k;
-    switch(k){
-        case SDLK_F1:  return XK_F1;  case SDLK_F2:  return XK_F2;
-        case SDLK_F3:  return XK_F3;  case SDLK_F4:  return XK_F4;
-        case SDLK_F5:  return XK_F5;  case SDLK_F6:  return XK_F6;
-        case SDLK_F7:  return XK_F7;  case SDLK_F8:  return XK_F8;
-        case SDLK_F9:  return XK_F9;  case SDLK_F10: return XK_F10;
-        case SDLK_F11: return XK_F11; case SDLK_F12: return XK_F12;
-        case SDLK_INSERT:   return XK_Insert;
-        case SDLK_DELETE:   return XK_Delete;
-        case SDLK_HOME:     return XK_Home;
-        case SDLK_END:      return XK_End;
-        case SDLK_PAGEUP:   return XK_Prior;
-        case SDLK_PAGEDOWN: return XK_Next;
-        case SDLK_RETURN:   return XK_Return;
-        case SDLK_SPACE:    return XK_space;
-        case SDLK_TAB:      return XK_Tab;
-        default:            return NoSymbol;
-    }
-}
-
 struct Bind {
-    SDL_Keycode key    = SDLK_UNKNOWN;
-    bool        waiting= false;
-    KeyCode     keycode= 0;           // X11 keycode for XQueryKeymap polling
+    SDL_Keycode      key    = SDLK_UNKNOWN;
+    bool             waiting= false;
+    std::atomic<int> native {0};       // keycode X11 / VK do Windows, lido pelo hotkeyLoop
     std::string name() const {
         if(waiting)           return "...";
         if(key==SDLK_UNKNOWN) return "None";
@@ -116,23 +47,20 @@ struct Bind {
     }
     void set(SDL_Keycode k){
         waiting=false;
-        if(k==SDLK_ESCAPE){ key=SDLK_UNKNOWN; keycode=0; return; }
+        if(k==SDLK_ESCAPE){ key=SDLK_UNKNOWN; native=0; return; }
         key=k;
-        KeySym ks=sdlToKeySym(k);
-        keycode=(ks!=NoSymbol && g_dpy_ui) ? XKeysymToKeycode(g_dpy_ui,ks) : 0;
+        native=g_platform->mapKey(k);
     }
 } g_bind;
 
-// forward declared — defined after g_clicker
-static void hotkeyLoop();
-
 // ── Clicker ───────────────────────────────────────────────────────────────────
 struct Clicker {
-    std::atomic<bool>  enabled {false};
-    std::atomic<float> minCPS  {10.f};
-    std::atomic<float> maxCPS  {14.f};
-    std::atomic<bool>  holdOnly{true};
-    std::atomic<bool>  running {true};
+    std::atomic<bool>  enabled  {false};
+    std::atomic<float> minCPS   {10.f};
+    std::atomic<float> maxCPS   {14.f};
+    std::atomic<bool>  holdOnly {true};
+    std::atomic<bool>  workInInv{false};
+    std::atomic<bool>  running  {true};
     std::thread        worker;
     void start(){ worker=std::thread([this]{loop();}); }
     void stop() { running=false; if(worker.joinable()) worker.join(); }
@@ -142,11 +70,13 @@ private:
         auto last=std::chrono::steady_clock::now();
         long long delay=80;
         while(running){
-            updateFocus();
-            if(enabled&&g_win&&(!holdOnly||isLMBHeld())){
+            bool target=g_platform->updateTarget();
+            bool inGui=target&&g_platform->isCursorVisible();
+            g_inGui=inGui;
+            if(enabled&&target&&(!inGui||workInInv)&&(!holdOnly||g_platform->isLMBHeld())){
                 auto now=std::chrono::steady_clock::now();
                 if(std::chrono::duration_cast<std::chrono::milliseconds>(now-last).count()>=delay){
-                    injectClick();
+                    g_platform->sendClick();
                     last=now;
                     float lo=minCPS.load(),hi=maxCPS.load();
                     if(lo>hi) lo=hi;
@@ -158,24 +88,18 @@ private:
     }
 } g_clicker;
 
-// ── Hotkey polling thread (XQueryKeymap — no grab, no interception) ───────────
+// ── Hotkey polling thread (sem grab, sem interceptar a tecla) ─────────────────
 static std::atomic<bool> g_hotkeyRunning{false};
 static std::thread       g_hotkeyThread;
 
 static void hotkeyLoop(){
     bool prev=false;
     while(g_hotkeyRunning){
-        KeyCode kc=g_bind.keycode;
-        if(kc && g_dpy_ui){
-            char keys[32]{};
-            XQueryKeymap(g_dpy_ui,keys);
-            bool cur=(keys[kc/8]>>(kc%8))&1;
-            if(cur&&!prev)
-                g_clicker.enabled.store(!g_clicker.enabled.load());
-            prev=cur;
-        } else {
-            prev=false;
-        }
+        int key=g_bind.native;
+        bool cur=key&&g_platform->isKeyDown(key);
+        if(cur&&!prev)
+            g_clicker.enabled.store(!g_clicker.enabled.load());
+        prev=cur;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
@@ -262,7 +186,8 @@ static void Divider(const char* label){
     ImGui::Dummy({w,ts.y+5.f});
 }
 
-// Card simples: desenha fundo+borda+accent, avança cursor
+// Card simples: desenha fundo+borda+accent; o destrutor avança o cursor
+// (depois do conteúdo, que reposiciona o cursor dentro do card)
 struct Card {
     ImVec2 o; float w,h;
     Card(float height):h(height){
@@ -273,8 +198,10 @@ struct Card {
         dl->AddRectFilled(o,{o.x+w,o.y+h},C(c::bg_panel),8.f);
         dl->AddRect(o,{o.x+w,o.y+h},C(c::stroke),8.f,0,1.f);
         dl->AddRectFilled(o,{o.x+w,o.y+2.f},C(c::accent,.6f),8.f);
+    }
+    ~Card(){
         // reserva espaço — sem PushClipRect pra não quebrar layout
-        ImGui::SetCursorScreenPos({o.x,o.y+h+8.f});
+        ImGui::SetCursorScreenPos({o.x,o.y+h+2.f});
         ImGui::Dummy({0.f,0.f});
     }
 };
@@ -295,7 +222,7 @@ static void SliderRow(const char* id, const char* label, float* v, float lo, flo
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 static void RenderUI(){
-    constexpr float W=360.f, H=430.f;
+    constexpr float W=360.f, H=494.f;
     ImGuiIO& io=ImGui::GetIO();
     ImGui::SetNextWindowPos({(io.DisplaySize.x-W)*.5f,(io.DisplaySize.y-H)*.5f},ImGuiCond_Always);
     ImGui::SetNextWindowSize({W,H},ImGuiCond_Always);
@@ -328,12 +255,14 @@ static void RenderUI(){
         ImGui::PopFont();
         ImGui::SetCursorPos({42.f,30.f});
         ImGui::PushFont(font::regular);
-        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("v1.0  ·  Linux AutoClicker"); ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("v2.1  ·  %s AutoClicker",g_platform->name()); ImGui::PopStyleColor();
         ImGui::PopFont();
         // badge
-        bool on=g_clicker.enabled.load(), focused=(g_win!=0);
+        bool on=g_clicker.enabled.load(), focused=g_platform->hasTarget();
+        bool paused=g_inGui&&!g_clicker.workInInv;
         ImVec4 bc; const char* bt;
-        if(on&&focused){bc=c::green;bt="ACTIVE";}
+        if(on&&focused&&paused){bc=c::yellow;bt="IN GUI";}
+        else if(on&&focused){bc=c::green;bt="ACTIVE";}
         else if(on){bc=c::yellow;bt="NO FOCUS";}
         else{bc=c::red;bt="IDLE";}
         ImVec2 ts=ImGui::CalcTextSize(bt);
@@ -406,6 +335,12 @@ static void RenderUI(){
         ImGui::SetCursorScreenPos({card.o.x+card.w-54.f,card.o.y+(56.f-20.f)*.5f});
         Toggle("##hold",g_clicker.holdOnly);
     }
+    {
+        Card card(56.f);
+        RowBegin(card.o,card.w,"Work in inventory","Keep clicking with GUIs open");
+        ImGui::SetCursorScreenPos({card.o.x+card.w-54.f,card.o.y+(56.f-20.f)*.5f});
+        Toggle("##inv",g_clicker.workInInv);
+    }
 
     ImGui::EndGroup();
 
@@ -421,13 +356,8 @@ static void RenderUI(){
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 int main(int,char**){
-    XInitThreads();
-    g_dpy_ui  = XOpenDisplay(nullptr);
-    g_dpy_clk = XOpenDisplay(nullptr);
-    if(!g_dpy_ui || !g_dpy_clk){
-        fprintf(stderr,"XOpenDisplay failed: is DISPLAY set?\n");
-        return 1;
-    }
+    g_platform=CreatePlatform();
+    if(!g_platform->init()) return 1;
 
     if(SDL_Init(SDL_INIT_VIDEO)!=0){
         fprintf(stderr,"SDL_Init error: %s\n",SDL_GetError());
@@ -436,7 +366,7 @@ int main(int,char**){
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
     SDL_Window* win=SDL_CreateWindow("OxygenClicker",
-        SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,360,430,
+        SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,360,494,
         SDL_WINDOW_OPENGL|SDL_WINDOW_SHOWN|SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_GLContext ctx=SDL_GL_CreateContext(win);
     SDL_GL_SetSwapInterval(1);
@@ -471,7 +401,7 @@ int main(int,char**){
             if(e.type==SDL_KEYDOWN && g_bind.waiting)
                 g_bind.set(e.key.keysym.sym);
         }
-        // hotkey handled by hotkeyLoop thread (XQueryKeymap polling)
+        // hotkey handled by hotkeyLoop thread (polling via Platform::isKeyDown)
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -485,12 +415,10 @@ int main(int,char**){
         SDL_GL_SwapWindow(win);
     }
 
-    if(g_dpy_ui) XUngrabKey(g_dpy_ui,AnyKey,AnyModifier,DefaultRootWindow(g_dpy_ui));
     g_clicker.stop();
     g_hotkeyRunning=false;
     if(g_hotkeyThread.joinable()) g_hotkeyThread.join();
-    if(g_dpy_ui)  XCloseDisplay(g_dpy_ui);
-    if(g_dpy_clk) XCloseDisplay(g_dpy_clk);
+    g_platform.reset();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
