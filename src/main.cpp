@@ -255,7 +255,7 @@ static void RenderUI(){
         ImGui::PopFont();
         ImGui::SetCursorPos({42.f,30.f});
         ImGui::PushFont(font::regular);
-        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("v2.1.1  ·  %s AutoClicker",g_platform->name()); ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text,c::text_dim); ImGui::Text("v2.1.2  ·  %s AutoClicker",g_platform->name()); ImGui::PopStyleColor();
         ImGui::PopFont();
         // badge
         bool on=g_clicker.enabled.load(), focused=g_platform->hasTarget();
